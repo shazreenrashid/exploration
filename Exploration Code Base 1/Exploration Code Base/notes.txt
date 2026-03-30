@@ -1,0 +1,3 @@
+-what is the circle showing in the figures 
+-how are we penalizing taking the same cluster 
+-

@@ -1,0 +1,48 @@
+# --- Environment Settings ---
+num_agents: 4
+grid_width: 100
+grid_height: 100
+risk_threshold: 0.8
+sensor_range: 7.0    
+d_min: 2.5           
+d_max: 8.0  
+buffer_fraction: 0.3 
+
+
+sensor_patch: 5 #    5x5     
+deconfliction_radius: 12 
+noise_sd: 0.05
+risk_sd_min: 6
+risk_sd_max: 10
+w_exploration: 0.1
+w_risk: 20.0
+w_deconfliction: 5.0
+steepness: 5.0
+physical_deconfliction_radius: 12.0
+
+# --- Training & RL Settings ---
+train_mode: true      # CRITICAL: Needed for main.py logic
+episodes: 2500        # Changed from 'epochs' to match main.py loop
+max_steps: 1200        # Steps per episode
+save_freq: 50         # Frequency for model checkpoints
+render_freq: 20       # Frequency for visualization
+lr: 0.0001           
+gamma: 0.99           
+
+# --- Hierarchical Policy (GAT Actor-Critic) ---
+hidden_dim: 64
+replan_interval: 5
+num_clusters: 4       # Matched to Agent init; usually equal to num_agents
+
+# --- Tactical Value Iteration (Mid-Level) ---
+# Variable names here must match Agent.__init__ keys
+vi_gamma: 0.8         # Lower gamma forces focus on the immediate cluster
+risk_weight: 1500.0   # Matches self.vi_solver.risk_weight in Agent.py
+ki: 100.0             # Information Gain multiplier for VI
+vi_iters: 30
+edge_risk_weight: 20
+vi_nr_steepness: 5
+
+# --- Note on Weights ---
+# w_exploration and w_risk are handled inside graph_environment.py 
+# and the exponential math in value_iteration.py.
