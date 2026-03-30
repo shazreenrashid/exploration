@@ -32,8 +32,12 @@ def main():
     learner = CTDELearner(agents, central_critic, lr=config.get('lr', 1e-4))
 
     # Checkpoint loading so training can resume after a crash
-    latest = sorted(glob.glob(f"{checkpoint_dir}/agent_0_ep*.pth"))
+    # latest = sorted(glob.glob(f"{checkpoint_dir}/agent_0_ep*.pth"))
+    # if latest:
+    #     ep_num = int(latest[-1].split('ep')[1].split('.')[0])
+    latest = glob.glob(f"{checkpoint_dir}/agent_0_ep*.pth")
     if latest:
+        latest.sort(key=lambda x: int(x.split('ep')[1].split('.')[0]))
         ep_num = int(latest[-1].split('ep')[1].split('.')[0])
         print(f"Resuming from episode {ep_num}")
         for i, agent in enumerate(agents):
@@ -78,7 +82,8 @@ def main():
         for step in range(config.get('max_steps', 200)):
             # A. Update Perception (Decentralized)
             for i, agent in enumerate(agents):
-                agent.update_perception(obs_buffers[i], step)
+                if step>0: 
+                    agent.update_perception(obs_buffers[i], step)
 
             # B. Coordination Phase
             summaries = [a.get_broadcast_summary() for a in agents]
@@ -97,7 +102,7 @@ def main():
                     target_pos, log_prob = agent.act(
                         step, train=True, claimed_cluster_ids=claimed_cluster_ids
                     )
-                    memory['log_probs'][i].append(log_prob.detach())
+                    memory['log_probs'][i].append(log_prob)
                 else:
                     target_pos = agent.act(
                         step, train=False, claimed_cluster_ids=claimed_cluster_ids

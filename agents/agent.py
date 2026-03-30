@@ -170,8 +170,8 @@ class Agent:
             # --- THE NEW FALLBACK LOGIC ---
             # Loop through the clusters from highest probability to lowest
             for candidate_cluster in cluster_order:
-                if candidate_cluster in claimed_cluster_ids:
-                    continue
+                # if candidate_cluster in claimed_cluster_ids:
+                #     continue
                     
                 candidate_nodes = [
                     node_ids[k] for k, c_id in enumerate(assignments)
