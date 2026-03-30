@@ -2,19 +2,35 @@ import torch
 import torch.nn.functional as F
 
 class CTDELearner:
-    def __init__(self, agents, central_critic, lr=1e-4, gamma=0.99):
+    # --- REMOVED: Old init signature ---
+    # def __init__(self, agents, central_critic, lr=1e-4, gamma=0.99):
+    
+    # --- ADDED: Accept shared_policy ---
+    def __init__(self, agents, central_critic, shared_policy, lr=1e-4, gamma=0.99):
         self.agents = agents
         self.gamma = gamma
         self.central_critic = central_critic
+        self.shared_policy = shared_policy
         
-        # Detect device from the first agent's policy
-        self.device = next(agents[0].policy.parameters()).device
+        # --- REMOVED: Getting device from independent agent ---
+        # self.device = next(agents[0].policy.parameters()).device
+        
+        # --- ADDED: Get device directly from shared policy ---
+        self.device = next(shared_policy.parameters()).device
         
         # Separate optimizers for actors and centralised critic
+        # --- REMOVED: Optimizing a list of multiple independent policies ---
+        # self.actor_optimizer = torch.optim.Adam(
+        #     [p for a in agents for p in a.policy.parameters()],
+        #     lr=lr
+        # )
+        
+        # --- ADDED: Optimize only the shared_policy parameters ---
         self.actor_optimizer = torch.optim.Adam(
-            [p for a in agents for p in a.policy.parameters()],
+            self.shared_policy.parameters(),
             lr=lr
         )
+        
         self.critic_optimizer = torch.optim.Adam(
             central_critic.parameters(),
             lr=lr
@@ -51,32 +67,37 @@ class CTDELearner:
         policy_loss = 0
         for i in range(len(self.agents)):
             agent_log_probs = torch.stack(memory['log_probs'][i])  # [T]
-            policy_loss -= (agent_log_probs * advantage).mean()
+            
+            # --- REMOVED: Premature averaging per agent ---
+            # policy_loss -= (agent_log_probs * advantage).mean()
+            
+            # --- ADDED: Summing losses first ---
+            # WHAT: We sum the gradients for this specific agent across the timesteps.
+            policy_loss -= (agent_log_probs * advantage).sum()
+
+        # --- ADDED: Final Global Average ---
+        # WHAT: Divide the total sum by (Number of Agents * Number of Timesteps).
+        # WHY: This ensures the gradient magnitude remains stable regardless of how many 
+        # agents you simulate or how long the episode runs.
+        policy_loss = policy_loss / (len(self.agents) * len(rewards))
 
         # 6. Critic loss
         value_loss = F.mse_loss(values, returns)
 
-        # # 7. Update actors
-        # self.actor_optimizer.zero_grad()
-        # policy_loss.backward(retain_graph=True)  # retain_graph because value_loss reuses values
-        # torch.nn.utils.clip_grad_norm_(
-        #     [p for a in self.agents for p in a.policy.parameters()], 1.0
-        # )
-        # self.actor_optimizer.step()
-
-        # # 8. Update centralised critic
-        # self.critic_optimizer.zero_grad()
-        # value_loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.central_critic.parameters(), 1.0)
-        # self.critic_optimizer.step()
         # 7. Update actors and critic together
         total_loss = policy_loss + value_loss
         self.actor_optimizer.zero_grad()
         self.critic_optimizer.zero_grad()
         total_loss.backward()
-        torch.nn.utils.clip_grad_norm_(
-            [p for a in self.agents for p in a.policy.parameters()], 1.0
-        )
+        
+        # --- REMOVED: Clipping gradients for multiple independent policies ---
+        # torch.nn.utils.clip_grad_norm_(
+        #     [p for a in self.agents for p in a.policy.parameters()], 1.0
+        # )
+        
+        # --- ADDED: Clip gradients for the single shared policy ---
+        torch.nn.utils.clip_grad_norm_(self.shared_policy.parameters(), 1.0)
+        
         torch.nn.utils.clip_grad_norm_(self.central_critic.parameters(), 1.0)
         self.actor_optimizer.step()
         self.critic_optimizer.step()
@@ -91,5 +112,3 @@ class CTDELearner:
             returns[step] = R
             
         return returns
-
-

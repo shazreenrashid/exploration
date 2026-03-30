@@ -4,7 +4,10 @@ from environment.node_types import NodeType
 from torch.distributions import Categorical
 
 class Agent:
-    def __init__(self, agent_id, config):
+    # --- ADDED: Include shared_policy in the initialization arguments ---
+    # WHAT: The agent now accepts a pre-built policy from main.py.
+    # WHY: So all agents share the exact same weights in memory.
+    def __init__(self, agent_id, config, shared_policy):
         self.agent_id = agent_id
         self.config = config
         self.current_node_id = None 
@@ -36,13 +39,20 @@ class Agent:
         )
         
         # 2. High-Level Brain: GAT Actor-Critic
-        from policies.high_level.gat_actor_critic import GATActorCritic
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.policy = GATActorCritic(
-            input_dim=7,
-            hidden_dim=config.get('hidden_dim', 64),
-            num_clusters=self.num_clusters
-        ).to(self.device)
+        # --- REMOVED: Independent policy creation ---
+        # from policies.high_level.gat_actor_critic import GATActorCritic
+        # self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # self.policy = GATActorCritic(
+        #     input_dim=7,
+        #     hidden_dim=config.get('hidden_dim', 64),
+        #     num_clusters=self.num_clusters
+        # ).to(self.device)
+
+        # --- ADDED: Assign the shared policy ---
+        # WHAT: We extract the device directly from the shared policy and link it.
+        # WHY: This avoids initializing 4 separate neural networks, saving VRAM and enabling shared learning.
+        self.device = next(shared_policy.parameters()).device
+        self.policy = shared_policy
 
         self.last_embedding = None
         self.cached_assignments = None       # frozen K-Means assignments between replans
@@ -170,8 +180,8 @@ class Agent:
             # --- THE NEW FALLBACK LOGIC ---
             # Loop through the clusters from highest probability to lowest
             for candidate_cluster in cluster_order:
-                if candidate_cluster in claimed_cluster_ids:
-                    continue
+                # if candidate_cluster in claimed_cluster_ids:
+                #     continue
                     
                 candidate_nodes = [
                     node_ids[k] for k, c_id in enumerate(assignments)
@@ -308,5 +318,3 @@ class Agent:
         self.current_cluster_id = None
         self.needs_replan = True
         self.steps_since_replan = 0
-
-
