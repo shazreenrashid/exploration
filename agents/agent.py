@@ -148,7 +148,7 @@ class Agent:
         # REPLAN PATH: run full GAT + KMeans
         # ----------------------------------------------------------------
         if self.needs_replan:
-            cluster_probs, z_flat, assignments, centroids = self.policy(
+            cluster_probs, _, z_flat, assignments, centroids = self.policy(
                 pyg_data, cached_assignments=None
             )
             self.last_embedding = z_flat.detach()
@@ -223,7 +223,7 @@ class Agent:
         # CACHED PATH: Reuse exact target list, no new assignments
         # ----------------------------------------------------------------
         else:
-            cluster_probs, z_flat, assignments, _ = self.policy(
+            cluster_probs, _,  z_flat, assignments, _ = self.policy(
                 pyg_data, cached_assignments=self.cached_assignments
             )
             self.last_embedding = z_flat.detach()

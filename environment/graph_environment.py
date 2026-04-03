@@ -149,49 +149,47 @@ class GraphEnvironment:
         """
         Moves agents and returns:
         1. obs_buffers: Perception along the whole path.
-        2. team_reward: Centralized reward for CTDE training.
+        2. individual_rewards: Dict of rewards per agent for Decentralized Training.
         """
         self.current_step += 1
         obs_buffers = {i: [] for i in range(self.num_agents)}
         
-        # --- NEW: Pull weights from config (with fallbacks) ---
+        # Pull weights from config
         w_exploration = self.config.get('w_exploration', 0.1)
         w_risk = self.config.get('w_risk', 20.0)
         w_deconfliction = self.config.get('w_deconfliction', 5.0)
         physical_deconfliction_radius = self.config.get('physical_deconfliction_radius', 10.0)
-        steepness = self.config.get('steepness',5.0) 
+        steepness = self.config.get('steepness', 5.0) 
 
-        # Track stats for this specific team step
-        new_pixels_covered = 0
-        total_risk_penalty = 0.0
+        # Track stats for this specific step PER AGENT
+        individual_rewards = {i: 0.0 for i in range(self.num_agents)}
 
         for i, target_pos in actions.items():
             start_pos = self.agent_positions[i].copy()
             
-            # --- FIX 1: DYNAMIC BOUNDARIES ---
-            # Clip X and Y independently based on the true grid size
+            # DYNAMIC BOUNDARIES
             target_x = np.clip(target_pos[0], 0, self.grid_width - 1)
             target_y = np.clip(target_pos[1], 0, self.grid_height - 1)
             target_pos = np.array([target_x, target_y])
             
             # 1. Path Generation (Sampling every 3 units)
             dist = np.linalg.norm(target_pos - start_pos)
-            sensor_interval = 3.0 # How far the agent walks before taking a reading
+            sensor_interval = 3.0
             
             path_coords = []
             if dist < 1e-5:
                 path_coords.append(start_pos)
             else:
-                # Get the directional vector
                 direction = (target_pos - start_pos) / dist
-                
-                # Walk along the line, dropping a point every 3.0 units
                 for d in np.arange(0, dist, sensor_interval):
                     path_coords.append(start_pos + direction * d)
                 
-                # Always append the exact final target position to ensure we arrive
                 if np.linalg.norm(path_coords[-1] - target_pos) > 1e-5:
                     path_coords.append(target_pos)
+
+            # Initialize tracking for this agent's traversal
+            agent_exploration_gain = 0.0
+            agent_risk_penalty = 0.0
 
             # 2. Sequential Sensing
             for curr_p in path_coords:
@@ -200,49 +198,45 @@ class GraphEnvironment:
                 # A. Perception Buffer
                 obs_buffers[i].append({'position': curr_p, 'risk_patch': self._get_custom_patch(curr_p)})
 
-                # B. Team Exploration Reward
-                # --- FIX 2: DYNAMIC FOOTPRINT ---
+                # B. Individual Exploration Reward
                 x_s, x_e = max(0, ix-2), min(self.grid_width, ix+3)
                 y_s, y_e = max(0, iy-2), min(self.grid_height, iy+3)
                 
-                # Calculate newly explored pixels
+                # Calculate newly explored pixels by THIS agent
                 new_mask = ~self.global_coverage[x_s:x_e, y_s:y_e]
-                new_pixels_covered += np.sum(new_mask)
+                new_pixels = np.sum(new_mask)
+                agent_exploration_gain += (new_pixels * w_exploration)
+                
+                # Mark as covered globally so subsequent agents this step don't get double points
                 self.global_coverage[x_s:x_e, y_s:y_e] = True
 
-                # C. Safety Penalty
-                # --- FIX 3: CONFIG RISK WEIGHT ---
+                # C. Individual Safety Penalty
                 risk_val = self.R_true[ix, iy]
-                total_risk_penalty += risk_val * w_risk 
+                agent_risk_penalty += risk_val * w_risk 
+
+            # Apply traversal rewards/penalties to the agent
+            individual_rewards[i] += (agent_exploration_gain - agent_risk_penalty)
 
             self.agent_positions[i] = target_pos
             self.agent_trajectories[i].append(target_pos.copy())
 
-        # 3. Calculate CENTRALIZED REWARD
-        # Reward = (Exploration Gain) - (Team Safety Penalty) - (Distance Overlap Penalty)
-        reward = (new_pixels_covered * w_exploration) - total_risk_penalty
-
-        # Deconfliction Penalty: Punish agents for being too close to each other
+        # 3. Calculate INDIVIDUAL Deconfliction Penalty
         for i in range(self.num_agents):
             for j in range(i + 1, self.num_agents):
                 d = np.linalg.norm(self.agent_positions[i] - self.agent_positions[j])
                 
                 if d < physical_deconfliction_radius:
-                    # Normalizes distance from 0 to 1 inside the radius.
                     overlap = 1.0 - (d / physical_deconfliction_radius)
-                    
-                    # --- THE FIX: The Steepness Factor ---
-                    
-                    
-                    # np.exp(5.0 * 1.0) = ~148. 
-                    # If w_deconfliction is 5.0, a direct collision is a ~740 penalty!
                     penalty = w_deconfliction * (np.exp(steepness * overlap) - 1.0)
                     
-                    reward -= penalty
-        
+                    # Both agents get penalized for being too close to each other
+                    individual_rewards[i] -= penalty
+                    individual_rewards[j] -= penalty
 
         done = self.current_step >= self.config.get('max_steps', 200)
-        return obs_buffers, reward, done, {}
+        
+        # Note: Return individual_rewards instead of team_reward
+        return obs_buffers, individual_rewards, done, {}
 
 
     def render(self, agents=None):
