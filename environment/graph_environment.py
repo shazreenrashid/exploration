@@ -44,27 +44,6 @@ class GraphEnvironment:
             grid = np.maximum(grid, blob)
         return grid
 
-    # def reset(self):
-    #     self.current_step = 0
-    #     self.global_coverage.fill(False)
-    #     self.R_true = self._generate_risk_world()
-        
-    #     # DYNAMIC CORNERS: [bottom-left, bottom-right, top-left, top-right]
-    #     corners = [
-    #         [2, 2], 
-    #         [self.grid_width - 3, 2], 
-    #         [2, self.grid_height - 3], 
-    #         [self.grid_width - 3, self.grid_height - 3]
-    #     ]
-        
-    #     observations = {}
-    #     for i in range(self.num_agents):
-    #         # Safe assignment: if there are >4 agents, wrap around to start
-    #         spawn_pos = corners[i % len(corners)]
-    #         self.agent_positions[i] = np.array(spawn_pos, dtype=float)
-    #         self.agent_trajectories[i] = [self.agent_positions[i].copy()]
-    #         observations[i] = [self._get_obs(i)] 
-    #     return observations
     def reset(self):
         self.current_step = 0
         self.global_coverage.fill(False)
@@ -75,7 +54,7 @@ class GraphEnvironment:
         buf_y = int(self.grid_height * self.buffer_fraction)
         pad = 2 
         
-        # --- NEW: Rejection Sampling with Distance Constraint ---
+        #Rejection Sampling with Distance Constraint
         min_spawn_distance = 20.0
         max_attempts = 1000 # Safety fallback to prevent infinite loops
         

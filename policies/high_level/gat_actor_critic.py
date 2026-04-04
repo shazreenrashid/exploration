@@ -5,8 +5,6 @@ from torch_geometric.nn import GATConv
 from sklearn.cluster import KMeans
 import numpy as np
 
-
-
 class GATActorCritic(nn.Module):
     def __init__(self, input_dim=7, hidden_dim=64, num_clusters=4):
         super().__init__()
@@ -23,8 +21,6 @@ class GATActorCritic(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
-
-        # 3. ✅ NEW: Local Critic Head
         # Evaluates the pooled state for THIS agent only.
         self.critic_layer = nn.Sequential(
             nn.Linear(hidden_dim * num_clusters, hidden_dim),
@@ -102,20 +98,20 @@ class GATActorCritic(nn.Module):
         # Flatten cluster embeddings
         z_flat = z_clusters.view(1, -1)   
 
-        # ✅ NEW: Calculate Value for this specific agent's state
+        # Calculate Value for this specific agent's state
         value = self.critic_layer(z_flat)
 
         logits = logits.unsqueeze(0)       
         probs = F.softmax(logits, dim=-1)
 
-        # ✅ CHANGED: Now returning 'value' alongside the rest
+        # Now returning 'value' alongside the rest
         return probs, value, z_flat, assignments, centroids
 
-    # ✅ NEW: Helper method for the learner to efficiently evaluate cached embeddings
+    #  Helper method for the learner to efficiently evaluate cached embeddings
     def evaluate_value(self, z_flat):
         return self.critic_layer(z_flat)
 
     def actor(self, data, cached_assignments=None):
-        # ✅ CHANGED: Ignore the value output here
+        #  Ignore the value output here
         probs, _, _, assignments, centroids = self.forward(data, cached_assignments)
         return probs, assignments, centroids

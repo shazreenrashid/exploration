@@ -44,7 +44,7 @@ class BeliefModel:
             if dist < self.d_min:
                 node_obj = self.graph.nodes[node_id]['obj']
                 
-                # --- THE FIX: Calculate updates based on the EXISTING node's exact position ---
+                # Calculate updates based on the EXISTING node's exact position ---
                 old_pos = node_obj.position
                 opx, opy = int(old_pos[0]), int(old_pos[1])
                 

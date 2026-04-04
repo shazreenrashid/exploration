@@ -8,7 +8,6 @@ class RiskAwareValueIteration:
         self.ki = config.get('ki', 100.0)
         self.risk_threshold = config.get('risk_threshold', 0.6)
         
-        # --- FIX 1: DYNAMIC BOUNDARIES & SENSORS ---
         self.grid_width = config.get('grid_width', 100)
         self.grid_height = config.get('grid_height', 100)
         self.sensor_patch = config.get('sensor_patch', 5)
@@ -33,7 +32,6 @@ class RiskAwareValueIteration:
         # This creates the "gravity well" that keeps the agent inside the cluster
         target_set = set(target_node_list)
         
-        # --- FIX 2: CONFIGURABLE ITERATIONS ---
         for _ in range(self.vi_iters):
             V_new = V.copy()
             for u in subgraph.nodes():
@@ -41,7 +39,6 @@ class RiskAwareValueIteration:
                 pos_u = subgraph.nodes[u]['pos']
                 px, py = int(pos_u[0]), int(pos_u[1])
                 
-                # --- FIX 3: DYNAMIC CLIPPING ---
                 x_s, x_e = max(0, px-2), min(self.grid_width, px+3)
                 y_s, y_e = max(0, py-2), min(self.grid_height, py+3)
                 

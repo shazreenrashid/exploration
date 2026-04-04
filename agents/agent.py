@@ -19,7 +19,7 @@ class Agent:
         self.current_pos = np.zeros(2)
         self.target_cluster_centroid = None  # For broadcasting to peers
         
-        # --- NEW: Replan Triggers ---
+        #Replan Triggers
         self.replan_interval = config.get('replan_interval', 20) # Replan every X steps
         self.steps_since_replan = 0
         
@@ -80,7 +80,23 @@ class Agent:
             new_values = np.where(coverage == 0, patch_data, 0.8 * current_belief + 0.2 * patch_data)
             self.belief.R[x_s:x_e, y_s:y_e] = new_values
             self.belief.C[x_s:x_e, y_s:y_e] = 1 
-
+    
+        # --- INLINE CLEANUP (Runs exactly once per step) ---
+        frontier_nodes = self.belief.get_frontier_nodes()
+        for n_id in frontier_nodes:
+            node_obj = self.belief.graph.nodes[n_id]['obj']
+            px, py = int(node_obj.position[0]), int(node_obj.position[1])
+            x_s, x_e = max(0, px - 2), min(self.grid_w, px + 3)
+            y_s, y_e = max(0, py - 2), min(self.grid_h, py + 3)
+            
+            unseen = np.sum(self.belief.C[x_s:x_e, y_s:y_e] == 0)
+            node_obj.unseen_count = float(unseen)
+            
+            if unseen == 0:
+                node_obj.node_type = NodeType.BREADCRUMB
+                self.belief.graph.nodes[n_id]['type'] = NodeType.BREADCRUMB
+                node_obj.timestamp = step
+        # ---------------------------------------------------.
         final_obs = obs_buffer[-1]
         self.current_pos = final_obs['position']
         self.current_node_id = self.belief.add_or_update_node(
@@ -134,19 +150,19 @@ class Agent:
             self.last_embedding = torch.zeros(
                 1, self.policy.hidden_dim * self.num_clusters, device=self.device
             )
-            if train:
-                return self.current_pos, torch.tensor(0.0, device=self.device)
-            return self.current_pos
+            # if train:
+            #     return self.current_pos, torch.tensor(0.0, device=self.device)
+            # return self.current_pos
+            # --- CHANGE 1: Return 3 variables (Pos, LogProb, IsDecision) ---
+            if train: return self.current_pos, torch.tensor(0.0, device=self.device), True
+            return self.current_pos, None, True
 
         pyg_data = self.belief.get_pyg_data()
 
-        # --- TRIGGER 1: Step Timeout ---
+        # Step Timeout
         if self.steps_since_replan >= self.replan_interval:
             self.needs_replan = True
 
-        # ----------------------------------------------------------------
-        # REPLAN PATH: run full GAT + KMeans
-        # ----------------------------------------------------------------
         if self.needs_replan:
             cluster_probs, _, z_flat, assignments, centroids = self.policy(
                 pyg_data, cached_assignments=None
@@ -167,11 +183,8 @@ class Agent:
             target_nodes = []
             chosen_cluster_id = None
             
-            # --- THE NEW FALLBACK LOGIC ---
             # Loop through the clusters from highest probability to lowest
             for candidate_cluster in cluster_order:
-                # if candidate_cluster in claimed_cluster_ids:
-                #     continue
                     
                 candidate_nodes = [
                     node_ids[k] for k, c_id in enumerate(assignments)
@@ -200,13 +213,13 @@ class Agent:
             else:
                 log_prob = None
 
-            # Global Fallback: If ALL clusters were empty or claimed
+            # If ALL clusters were empty or claimed
             if not target_nodes:
                 frontiers = self.belief.get_frontier_nodes()
                 if not frontiers:
-                    # Map is 100% explored, nothing left to do
-                    if train: return self.current_pos, log_prob
-                    return self.current_pos
+                    # CHANGE 2: added True, None, True 
+                    if train: return self.current_pos, log_prob, True
+                    return self.current_pos, None, True
                 
                 # Pick the closest global frontier as a last resort
                 target_nodes = [min(
@@ -219,14 +232,16 @@ class Agent:
             self.cached_target_nodes = target_nodes
             self.current_cluster_id = chosen_cluster_id
 
-        # ----------------------------------------------------------------
-        # CACHED PATH: Reuse exact target list, no new assignments
-        # ----------------------------------------------------------------
+        # --- CHANGE 3: Flag this as an active decision ---
+            is_decision_step = True
+
+        # cached path: Reuse exact target list, no new assignments
         else:
-            cluster_probs, _,  z_flat, assignments, _ = self.policy(
-                pyg_data, cached_assignments=self.cached_assignments
-            )
-            self.last_embedding = z_flat.detach()
+            #CHANGE 3 PART 2
+            # cluster_probs, _,  z_flat, assignments, _ = self.policy(
+            #     pyg_data, cached_assignments=self.cached_assignments
+            # )
+            # self.last_embedding = z_flat.detach()
 
             # Filter the cached list to only nodes that are STILL frontiers
             valid_targets = [
@@ -235,7 +250,7 @@ class Agent:
                 self.belief.graph.nodes[n]['obj'].node_type == NodeType.FRONTIER
             ]
 
-            # --- TRIGGER 2: Cluster Exhausted ---
+            # Cluster Exhausted 
             if not valid_targets:
                 self.needs_replan = True
                 # Instantly recurse to trigger the replan path on this exact step
@@ -243,19 +258,20 @@ class Agent:
 
             self.cached_target_nodes = valid_targets
 
-            if train:
-                m = Categorical(cluster_probs.squeeze(0))
-                log_prob = m.log_prob(
-                    torch.tensor(self.current_cluster_id, device=self.device)
-                ) if self.current_cluster_id is not None else torch.tensor(0.0, device=self.device)
-            else:
-                log_prob = None
-
+            # if train:
+            #     m = Categorical(cluster_probs.squeeze(0))
+            #     log_prob = m.log_prob(
+            #         torch.tensor(self.current_cluster_id, device=self.device)
+            #     ) if self.current_cluster_id is not None else torch.tensor(0.0, device=self.device)
+            # else:
+            #     log_prob = None
+            # --- CHANGE 4: Force log_prob to None, flag as non-decision ---
+            log_prob = None
+            is_decision_step = False
             target_nodes = self.cached_target_nodes
 
-        # ----------------------------------------------------------------
-        # SHARED: update centroid, run VI, take tactical step
-        # ----------------------------------------------------------------
+
+        # shared: update centroid, run VI, take tactical step
         target_positions = np.array([
             self.belief.graph.nodes[n]['pos'] for n in target_nodes
         ])
@@ -283,9 +299,13 @@ class Agent:
         # Increment step counter for timeout tracking
         self.steps_since_replan += 1
 
+        # if train:
+        #     return final_pos, log_prob
+        # return final_pos
+        # --- CHANGE 5: Return the 3 variables ---
         if train:
-            return final_pos, log_prob
-        return final_pos
+            return final_pos, log_prob, is_decision_step
+        return final_pos, None, is_decision_step
 
     def reset(self):
         from agents.belief_model import BeliefModel
