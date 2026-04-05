@@ -45,26 +45,86 @@ class GraphEnvironment:
             grid = np.maximum(grid, blob)
         return grid
 
+    # def reset(self):
+    #     self.current_step = 0
+    #     self.global_coverage.fill(False)
+    #     self.R_true = self._generate_risk_world()
+        
+    #     # DYNAMIC CORNERS: [bottom-left, bottom-right, top-left, top-right]
+    #     corners = [
+    #         [2, 2], 
+    #         [self.grid_width - 3, 2], 
+    #         [2, self.grid_height - 3], 
+    #         [self.grid_width - 3, self.grid_height - 3]
+    #     ]
+        
+    #     observations = {}
+    #     for i in range(self.num_agents):
+    #         # Safe assignment: if there are >4 agents, wrap around to start
+    #         spawn_pos = corners[i % len(corners)]
+    #         self.agent_positions[i] = np.array(spawn_pos, dtype=float)
+    #         self.agent_trajectories[i] = [self.agent_positions[i].copy()]
+    #         observations[i] = [self._get_obs(i)] 
+    #     return observations
+
     def reset(self):
         self.current_step = 0
         self.global_coverage.fill(False)
         self.R_true = self._generate_risk_world()
         
-        # DYNAMIC CORNERS: [bottom-left, bottom-right, top-left, top-right]
-        corners = [
-            [2, 2], 
-            [self.grid_width - 3, 2], 
-            [2, self.grid_height - 3], 
-            [self.grid_width - 3, self.grid_height - 3]
-        ]
+        # Define the inner forbidden zone
+        buf_x = int(self.grid_width * self.buffer_fraction)
+        buf_y = int(self.grid_height * self.buffer_fraction)
+        pad = 2 
+        
+        #Rejection Sampling with Distance Constraint
+        min_spawn_distance = 20.0
+        max_attempts = 1000 # Safety fallback to prevent infinite loops
         
         observations = {}
         for i in range(self.num_agents):
-            # Safe assignment: if there are >4 agents, wrap around to start
-            spawn_pos = corners[i % len(corners)]
-            self.agent_positions[i] = np.array(spawn_pos, dtype=float)
+            placed = False
+            attempts = 0
+            
+            while not placed and attempts < max_attempts:
+                # 1. Pick a random point anywhere on the map
+                sx = np.random.randint(pad, self.grid_width - pad)
+                sy = np.random.randint(pad, self.grid_height - pad)
+                
+                # 2. Check if it accidentally landed in the center danger zone
+                in_center = (buf_x <= sx <= self.grid_width - buf_x) and \
+                            (buf_y <= sy <= self.grid_height - buf_y)
+                
+                if not in_center:
+                    # 3. Check distance against all previously placed agents
+                    too_close = False
+                    for j in range(i):
+                        dist = np.linalg.norm(np.array([sx, sy]) - self.agent_positions[j])
+                        if dist < min_spawn_distance:
+                            too_close = True
+                            break # No need to check other agents, this spot is ruined
+                    
+                    if not too_close:
+                        self.agent_positions[i] = np.array([sx, sy], dtype=float)
+                        placed = True
+                
+                attempts += 1
+                
+            # 4. Safety Fallback: If the map is too crowded and we failed 1000 times,
+            # drop the distance constraint but keep them in the border.
+            if not placed:
+                while True:
+                    sx = np.random.randint(pad, self.grid_width - pad)
+                    sy = np.random.randint(pad, self.grid_height - pad)
+                    if not ((buf_x <= sx <= self.grid_width - buf_x) and 
+                            (buf_y <= sy <= self.grid_height - buf_y)):
+                        self.agent_positions[i] = np.array([sx, sy], dtype=float)
+                        print(f"Warning: Forced to spawn Agent {i} close to another agent.")
+                        break
+
             self.agent_trajectories[i] = [self.agent_positions[i].copy()]
             observations[i] = [self._get_obs(i)] 
+            
         return observations
 
     def _get_custom_patch(self, pos):

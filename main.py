@@ -8,7 +8,6 @@ import matplotlib.pyplot as plt
 from environment.graph_environment import GraphEnvironment
 from agents.agent import Agent
 from training.learner import CTDELearner
-# --- ADDED: We now need to import GATActorCritic here to create the shared brain ---
 from policies.high_level.gat_actor_critic import GATActorCritic, CentralCritic
 
 def main():
@@ -20,13 +19,8 @@ def main():
     checkpoint_dir = 'checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
     
-    env = GraphEnvironment(
-        config
-    )
+    env = GraphEnvironment(config)
 
-    # --- ADDED: Parameter Sharing Setup ---
-    # WHAT: We instantiate a single GATActorCritic before creating the agents.
-    # WHY: All agents will now use this exact same network in memory.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     shared_policy = GATActorCritic(
         input_dim=7,
@@ -34,40 +28,17 @@ def main():
         num_clusters=config.get('num_clusters', 4)
     ).to(device)
     
-    # --- REMOVED: Old independent agent creation ---
-    # agents = [Agent(i, config) for i in range(config['num_agents'])]
-    
-    # --- ADDED: Pass the shared_policy to every agent ---
     agents = [Agent(i, config, shared_policy) for i in range(config['num_agents'])]
     
     central_critic = CentralCritic(
         hidden_dim=config.get('hidden_dim', 64),
         num_agents=config['num_agents'],
         num_clusters=config.get('num_clusters', 4)
-    ).to(device) # Can use device here safely
+    ).to(device) 
 
-    # --- REMOVED: Old learner init ---
-    # learner = CTDELearner(agents, central_critic, lr=config.get('lr', 1e-4))
-    
-    # --- ADDED: Pass shared_policy to the learner so it can optimize the shared weights ---
     learner = CTDELearner(agents, central_critic, shared_policy, lr=config.get('lr', 1e-4))
 
-    # --- REMOVED: Old independent checkpoint loading ---
-    # latest = sorted(glob.glob(f"{checkpoint_dir}/agent_0_ep*.pth"))
-    # if latest:
-    #     ep_num = int(latest[-1].split('ep')[1].split('.')[0])
-    #     print(f"Resuming from episode {ep_num}")
-    #     for i, agent in enumerate(agents):
-    #         ckpt_path = f"{checkpoint_dir}/agent_{i}_ep{ep_num}.pth"
-    #         if os.path.exists(ckpt_path):
-    #             agent.policy.load_state_dict(torch.load(ckpt_path, map_location=agent.device))
-                
-    # --- ADDED: Shared policy checkpoint loading ---
-    # WHAT: Load just the single shared_policy weights.
-    # WHY: We only save one model now, no need to loop through agents.
-    #latest = sorted(glob.glob(f"{checkpoint_dir}/shared_policy_ep*.pth"))
     latest = glob.glob(f"{checkpoint_dir}/shared_policy_ep*.pth")
-    # Sort mathematically by the integer episode number
     latest.sort(key=lambda x: int(x.split('ep')[1].split('.')[0]))
     if latest:
         ep_num = int(latest[-1].split('ep')[1].split('.')[0])
@@ -96,29 +67,45 @@ def main():
         for i, agent in enumerate(agents):
             agent.update_perception(obs_buffers[i], step=0)
         
-        # --- REMOVED: The manual claims tracking for Step 0 ---
-        # warmup_claimed = set()
         for agent in agents:
-            # --- ADDED: Just pass empty set/None, removing manual hardcoded claims ---
+            # We don't care about catching the 3 variables for step 0 warmup
             agent.act(step=0, train=False, claimed_cluster_ids=set())
-            # if agent.current_cluster_id is not None:
-            #     warmup_claimed.add(agent.current_cluster_id)
 
-        # Initialize memory for this episode
+        # --- REMOVED: The old synchronized memory dict ---
+        # memory = {
+        #     'log_probs': [[] for _ in range(config['num_agents'])],
+        #     'embeddings': [],   
+        #     'rewards': [],
+        #     'masks': []
+        # }
+
+        # --- ADDED: Independent Memory Architecture ---
+        # 1. The Permanent Storage (The Batch Data)
         memory = {
-            'log_probs': [[] for _ in range(config['num_agents'])],
-            'embeddings': [],   
-            'rewards': [],
-            'masks': []
+            i: {
+                'log_probs': [], 
+                'global_embeddings': [], 
+                'rewards': [],
+                'durations': []
+            } for i in range(config['num_agents'])
+        }
+
+        # 2. The "Shopping Carts" (Active Journeys)
+        active_macro = {
+            i: {
+                'log_prob': None, 
+                'reward': 0.0, 
+                'duration': 0
+            } for i in range(config['num_agents'])
         }
 
         for step in range(config.get('max_steps', 200)):
             # A. Update Perception (Decentralized)
             for i, agent in enumerate(agents):
-                if step > 0: #
+                if step > 0: 
                     agent.update_perception(obs_buffers[i], step)
 
-            # B. Coordination Phase (Neural Broadcasts - WE KEEP THIS!)
+            # B. Coordination Phase (Neural Broadcasts)
             summaries = [a.get_broadcast_summary() for a in agents]
             for agent in agents:
                 agent.belief.reset_broadcast_masks()
@@ -127,50 +114,76 @@ def main():
 
             # C. Strategic Action
             actions = {}
-            # --- REMOVED: The manual claims set tracking ---
-            # claimed_cluster_ids = set()  
 
             for i, agent in enumerate(agents):
                 if is_training:
-                    # --- ADDED: Pass empty set to agent.act. Let RL handle deconfliction. ---
-                    target_pos, log_prob = agent.act(
+                    # CHANGED: Catch the new 3-variable signature ---
+                    target_pos, log_prob, is_decision = agent.act(
                         step, train=True, claimed_cluster_ids=set()
                     )
                     
-                    # --- CRITICAL FIX: REMOVED .detach() from log_prob ---
-                    # WHAT: Changed log_prob.detach() to just log_prob
-                    # WHY: If you detach the log_prob here, the gradients cannot flow back 
-                    # from the loss function into the Actor network. Training will silently fail.
-                    memory['log_probs'][i].append(log_prob)
+                    # ADDED: The SMDP Gatekeeper Logic ---
+                    if is_decision:
+                        # 1. Checkout the old cart (if this isn't the very first step)
+                        if active_macro[i]['log_prob'] is not None:
+                            memory[i]['log_probs'].append(active_macro[i]['log_prob'])
+                            memory[i]['rewards'].append(active_macro[i]['reward'])
+                            memory[i]['durations'].append(active_macro[i]['duration'])
+                        
+                        # 2. Start a new cart
+                        active_macro[i]['log_prob'] = log_prob
+                        active_macro[i]['reward'] = 0.0
+                        active_macro[i]['duration'] = 0
+                        
+                        # 3. Snapshot the global state (The X input)
+                        # We grab ALL agents' embeddings at this exact millisecond.
+                        step_embeddings = [a.last_embedding for a in agents]
+                        global_state = torch.cat(step_embeddings, dim=-1) # [1, 1024]
+                        memory[i]['global_embeddings'].append(global_state)
                 else:
-                    target_pos = agent.act(
+                    # CHANGED: Catch the new 3-variable signature ---
+                    target_pos, _, _ = agent.act(
                         step, train=False, claimed_cluster_ids=set()
                     )
 
-                # --- REMOVED: Manual cluster blocking logic ---
-                # if agent.current_cluster_id is not None:
-                #     claimed_cluster_ids.add(agent.current_cluster_id)
-
                 actions[i] = target_pos
 
-            # Store all agents' embeddings once per step
-            if is_training:
-                step_embeddings = [a.last_embedding for a in agents]
-                memory['embeddings'].append(step_embeddings)
+            # REMOVED: Store all agents' embeddings once per step ---
+            # if is_training:
+            #     step_embeddings = [a.last_embedding for a in agents]
+            #     memory['embeddings'].append(step_embeddings)
 
             # D. Environment Step
             obs_buffers, team_reward, done, _ = env.step(actions)
             
             episode_reward += team_reward
+            
+            # CHANGED: Accumulate MACRO-REWARDS instead of single-step rewards ---
             if is_training:
-                memory['rewards'].append(float(team_reward))
-                memory['masks'].append(float(1.0 - float(done)))
+                for i in range(config['num_agents']):
+                    # If the agent is actively executing a plan, add the reward to its cart
+                    if active_macro[i]['log_prob'] is not None:
+                        active_macro[i]['reward'] += float(team_reward)
+                        active_macro[i]['duration'] += 1
+
+                # REMOVED: Old 1-step reward and mask logic ---
+                # memory['rewards'].append(float(team_reward))
+                # memory['masks'].append(float(1.0 - float(done)))
 
             # E. Visualization
             # if ep % config.get('render_freq', 10) == 0:
             #     env.render(agents=agents)
 
             if done: break
+
+        # ADDED: End of Episode Cleanup ---
+        # Don't throw away the final journeys just because the clock ran out!
+        if is_training:
+            for i in range(config['num_agents']):
+                if active_macro[i]['log_prob'] is not None and active_macro[i]['duration'] > 0:
+                    memory[i]['log_probs'].append(active_macro[i]['log_prob'])
+                    memory[i]['rewards'].append(active_macro[i]['reward'])
+                    memory[i]['durations'].append(active_macro[i]['duration'])
 
         # 3. Policy Update (Centralized Training)
         if is_training:
@@ -184,13 +197,6 @@ def main():
             
             # Save Checkpoints
             if ep % config.get('save_freq', 50) == 0:
-                # --- REMOVED: Saving independent agent policies ---
-                # for i, agent in enumerate(agents):
-                #     torch.save(agent.policy.state_dict(), f"{checkpoint_dir}/agent_{i}_ep{ep}.pth")
-                
-                # --- ADDED: Save only the single shared policy ---
-                # WHAT: One file to rule them all.
-                # WHY: Since all agents share weights, we only need to write one policy to disk.
                 torch.save(shared_policy.state_dict(), f"{checkpoint_dir}/shared_policy_ep{ep}.pth")
                 torch.save(central_critic.state_dict(), f"{checkpoint_dir}/central_critic_ep{ep}.pth")
                 
