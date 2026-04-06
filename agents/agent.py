@@ -81,6 +81,23 @@ class Agent:
             self.belief.R[x_s:x_e, y_s:y_e] = new_values
             self.belief.C[x_s:x_e, y_s:y_e] = 1 
 
+        # --- INLINE CLEANUP (Runs exactly once per step) ---
+        frontier_nodes = self.belief.get_frontier_nodes()
+        for n_id in frontier_nodes:
+            node_obj = self.belief.graph.nodes[n_id]['obj']
+            px, py = int(node_obj.position[0]), int(node_obj.position[1])
+            x_s, x_e = max(0, px - 2), min(self.grid_w, px + 3)
+            y_s, y_e = max(0, py - 2), min(self.grid_h, py + 3)
+            
+            unseen = np.sum(self.belief.C[x_s:x_e, y_s:y_e] == 0)
+            node_obj.unseen_count = float(unseen)
+            
+            if unseen == 0:
+                node_obj.node_type = NodeType.BREADCRUMB
+                self.belief.graph.nodes[n_id]['type'] = NodeType.BREADCRUMB
+                node_obj.timestamp = step
+        # ---------------------------------------------------.
+
         final_obs = obs_buffer[-1]
         self.current_pos = final_obs['position']
         self.current_node_id = self.belief.add_or_update_node(

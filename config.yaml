@@ -1,5 +1,6 @@
 # --- Environment Settings ---
 num_agents: 4
+num_blobs: 3
 grid_width: 100
 grid_height: 100
 risk_threshold: 0.8
@@ -23,7 +24,7 @@ physical_deconfliction_radius: 12.0
 # --- Training & RL Settings ---
 train_mode: true      # CRITICAL: Needed for main.py logic
 episodes: 2500        # Changed from 'epochs' to match main.py loop
-max_steps: 1000        # Steps per episode
+max_steps: 450        # Steps per episode
 save_freq: 50         # Frequency for model checkpoints
 render_freq: 20       # Frequency for visualization
 lr: 0.0001           
